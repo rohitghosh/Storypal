@@ -3,7 +3,7 @@ import { Send, Image as ImageIcon, Type, RotateCcw } from "lucide-react";
 import { ChatLogic } from "@/utils/ChatLogic";
 import { ChatMessage, ChatState, ChatOption } from "@/types/ChatTypes";
 // import { saveChatMessage, getChatHistory } from "@/utils/chatFirebase";
-import { saveChatMessage, getChatHistory } from "@/components/chatFirebase";
+import { saveChatMessage, getChatHistory, trackRegeneration, getRegenerationCount } from "@/components/chatFirebase";
 import { updateDoc, doc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/contexts/AuthContext";
@@ -221,20 +221,39 @@ export const CustomerSupportChat: React.FC<CustomerSupportChatProps> = ({
   ) => {
     setIsLoading(true);
     try {
+      const imageKey = `page_${pageIndex}`;
+      // Check Firestore for regeneration count
+      const regenCount = await getRegenerationCount(userId, bookId, imageKey);
+      if (regenCount >= 1) {
+        const errorMessage: ChatMessage = {
+          id: Date.now().toString(),
+          type: "bot",
+          content:
+            "You've already regenerated this image once. You can switch between the original and new version using the toggle below.",
+          timestamp: new Date(),
+          options: [
+            {
+              id: `toggle_prev_${pageIndex}`,
+              label: "Toggle to previous version",
+              value: `toggle_prev_${pageIndex}`,
+            },
+            { id: "more_yes", label: "Yes, something else", value: "yes" },
+            { id: "more_no", label: "No, everything looks good", value: "no" },
+          ],
+        };
+        setMessages((prev) => [...prev, errorMessage]);
+        setIsLoading(false);
+        return;
+      }
       const page = bookData.pages[pageIndex];
       if (!page) return;
-
-      // Call the existing regeneratePage function
       await regeneratePage(pageIndex + 2, "image", undefined, feedback);
-
-      // Track regeneration
-      const imageUrls = page.imageUrls || [page.imageUrl];
-      const imageKey = `page_${pageIndex}`;
+      // Track regeneration in Firestore
+      await trackRegeneration(userId, bookId, imageKey);
+      // Update local state
       const newCount = (regenerationCounts.get(imageKey) || 0) + 1;
       setRegenerationCounts((prev) => new Map(prev).set(imageKey, newCount));
-
       onImageUpdate?.();
-
       const successMessage: ChatMessage = {
         id: Date.now().toString(),
         type: "bot",
@@ -251,7 +270,6 @@ export const CustomerSupportChat: React.FC<CustomerSupportChatProps> = ({
           { id: "more_no", label: "No, everything looks good", value: "no" },
         ],
       };
-
       setMessages((prev) => [...prev, successMessage]);
       await saveChatMessage(userId, bookId, successMessage);
     } catch (error) {
@@ -270,27 +288,42 @@ export const CustomerSupportChat: React.FC<CustomerSupportChatProps> = ({
   };
 
   const handleCoverRegeneration = async (feedback: string) => {
-    console.log(`coverRegen start feedbackLen ${feedback.length}`);
-
     setIsLoading(true);
     try {
+      const imageKey = "cover";
+      // Check Firestore for regeneration count
+      const regenCount = await getRegenerationCount(userId, bookId, imageKey);
+      if (regenCount >= 1) {
+        const errorMessage: ChatMessage = {
+          id: Date.now().toString(),
+          type: "bot",
+          content:
+            "You've already regenerated the cover once. You can switch between versions using the toggle below.",
+          timestamp: new Date(),
+          options: [
+            {
+              id: "toggle_cover",
+              label: "Toggle to previous version",
+              value: "toggle_cover",
+            },
+            { id: "more_yes", label: "Make more changes", value: "yes" },
+            { id: "more_no", label: "Everything looks good", value: "no" },
+          ],
+        };
+        setMessages((prev) => [...prev, errorMessage]);
+        setIsLoading(false);
+        return;
+      }
       const coverPage = bookData.pages.find((p) => p.isCover);
-      console.log(`coverPage found ${coverPage ? "yes" : "no"}`);
       if (!coverPage) return;
-
-      console.log(`calling regeneratePage id 1 mode cover`);
       await regeneratePage(1, "cover", undefined, feedback);
-      console.log(`regeneratePage finished`);
-
-      // Track regeneration
+      // Track regeneration in Firestore
+      await trackRegeneration(userId, bookId, imageKey);
+      // Update local state
       const prevCount = regenerationCounts.get("cover") || 0;
       const newCount = prevCount + 1;
-      console.log(`regenCount prev ${prevCount} new ${newCount}`);
       setRegenerationCounts((prev) => new Map(prev).set("cover", newCount));
-
       onImageUpdate?.();
-      console.log(`onImageUpdate called ${!!onImageUpdate}`);
-
       const successMessage: ChatMessage = {
         id: Date.now().toString(),
         type: "bot",
@@ -307,14 +340,11 @@ export const CustomerSupportChat: React.FC<CustomerSupportChatProps> = ({
           { id: "more_no", label: "Everything looks good", value: "no" },
         ],
       };
-
       setMessages((prev) => [...prev, successMessage]);
-      console.log(`successMessage pushed messagesLen ${bookData.pages.length}`);
     } catch (err: any) {
       console.error(`coverRegen error msg ${err.message}`);
     } finally {
       setIsLoading(false);
-      console.log(`coverRegen end loading false`);
     }
   };
 
